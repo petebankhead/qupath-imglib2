@@ -17,6 +17,7 @@ import qupath.ext.imglib2.ImgLib2ImageServer;
 import qupath.lib.images.servers.ImageChannel;
 import qupath.lib.images.servers.ImageServer;
 import qupath.lib.images.servers.ImageServerBuilder;
+import qupath.lib.images.servers.PixelCalibration;
 
 import java.awt.*;
 import java.awt.image.BufferedImage;
@@ -24,7 +25,9 @@ import java.io.IOException;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 
 public class OmeZarrImageServerBuilder implements ImageServerBuilder<BufferedImage> {
 
@@ -53,6 +56,7 @@ public class OmeZarrImageServerBuilder implements ImageServerBuilder<BufferedIma
         PyramidContents<T> contents = backend.read(uri);
         List<RandomAccessibleInterval<T>> resolutions = new ArrayList<>();
         AxisCalibration[] axes = contents.axesPerLevel[0];
+        PixelCalibration cal = parsePixelCalibration(axes);
         for (int r = 0; r < contents.numResolutionLevels(); r++) {
             RandomAccessibleInterval<T> img = contents.asImg(r);
             if (img.numDimensions() > 5 || img.numDimensions() < 2) {
@@ -76,7 +80,39 @@ public class OmeZarrImageServerBuilder implements ImageServerBuilder<BufferedIma
         } else if (!channels.isEmpty()) {
             logger.warn("Expected {} channels, found {}", expectedChannels, channels.size());
         }
+        return builder
+                .pixelCalibration(cal)
+                .build();
+    }
+
+    private static PixelCalibration parsePixelCalibration(AxisCalibration[] axes) {
+        if (!Objects.equals(AxisCalibration.X, axes[0].name))
+            throw new IllegalArgumentException("Expected first axis to be " + AxisCalibration.X + ", found " + axes[0].name);
+        if (!Objects.equals(AxisCalibration.Y, axes[1].name))
+            throw new IllegalArgumentException("Expected first axis to be " + AxisCalibration.Y + ", found " + axes[1].name);
+        // Original expected order is XYZCT *before* we convert for QuPath
+        var builder = new PixelCalibration.Builder();
+        if (isMicrons(axes[0].unit) && isMicrons(axes[1].unit)) {
+            builder = builder.pixelSizeMicrons(axes[0].scale, axes[1].scale);
+        }
+        if (axes.length > 3) {
+            if (!Objects.equals(AxisCalibration.Z, axes[2].name))
+                throw new IllegalArgumentException("Expected first axis to be " + AxisCalibration.Z + ", found " + axes[2].name);
+            if (isMicrons(axes[2].unit)) {
+                builder = builder.zSpacingMicrons(axes[2].scale);
+            }
+        }
         return builder.build();
+    }
+
+    private static final Set<String> MICRONS = Set.of(
+            "µm", "um",
+            "micron", "microns",
+            "micrometre", "micrometres",
+            "micrometer", "micrometers");
+
+    private static boolean isMicrons(String unit) {
+        return MICRONS.contains(unit);
     }
 
     private static List<ImageChannel> parseChannels(Omero omero) {
