@@ -2,6 +2,7 @@ package qupath.ext.imglib2;
 
 import net.imglib2.Cursor;
 import net.imglib2.RandomAccessibleInterval;
+import net.imglib2.blocks.PrimitiveBlocks;
 import net.imglib2.type.NativeType;
 import net.imglib2.type.numeric.ARGBType;
 import net.imglib2.type.numeric.NumericType;
@@ -14,7 +15,10 @@ import net.imglib2.type.numeric.integer.UnsignedShortType;
 import net.imglib2.type.numeric.real.DoubleType;
 import net.imglib2.type.numeric.real.FloatType;
 import net.imglib2.view.Views;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import qupath.lib.color.ColorModelFactory;
+import qupath.lib.common.LogTools;
 import qupath.lib.images.servers.AbstractTileableImageServer;
 import qupath.lib.images.servers.ImageChannel;
 import qupath.lib.images.servers.ImageServerBuilder;
@@ -33,11 +37,13 @@ import java.awt.image.DataBufferInt;
 import java.awt.image.DataBufferShort;
 import java.awt.image.DataBufferUShort;
 import java.awt.image.WritableRaster;
+import java.io.IOException;
 import java.net.URI;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 
@@ -51,6 +57,8 @@ import java.util.stream.IntStream;
  * @param <T> the pixel type of the underlying {@link RandomAccessibleInterval}
  */
 public class ImgLib2ImageServer<T extends NativeType<T> & NumericType<T>> extends AbstractTileableImageServer {
+
+    private static final Logger logger = LoggerFactory.getLogger(ImgLib2ImageServer.class);
 
     private static final AtomicInteger counter = new AtomicInteger();
     private final List<? extends RandomAccessibleInterval<T>> accessibles;
@@ -104,28 +112,25 @@ public class ImgLib2ImageServer<T extends NativeType<T> & NumericType<T>> extend
     }
 
     @Override
-    protected BufferedImage readTile(TileRequest tileRequest) {
+    protected BufferedImage readTile(TileRequest tileRequest) throws IOException {
         RandomAccessibleInterval<T> tile = getImgLib2Tile(tileRequest);
-        int minTileX = Math.toIntExact(tile.min(ImgBuilder.AXIS_X));
-        int minTileY = Math.toIntExact(tile.min(ImgBuilder.AXIS_Y));
-        int minTileC = Math.toIntExact(tile.min(ImgBuilder.AXIS_CHANNEL));
-
-        Cursor<T> cursor = tile.localizingCursor();
 
         if (isRGB()) {
-            return createArgbImage(tileRequest, cursor, minTileX, minTileY);
+            int minTileX = Math.toIntExact(tile.min(ImgBuilder.AXIS_X));
+            int minTileY = Math.toIntExact(tile.min(ImgBuilder.AXIS_Y));
+            return createArgbImage(tileRequest, tile.localizingCursor(), minTileX, minTileY);
         } else {
             int xyPlaneSize = Math.toIntExact(tile.dimension(ImgBuilder.AXIS_X) * tile.dimension(ImgBuilder.AXIS_Y));
 
             DataBuffer dataBuffer = switch (metadata.getPixelType()) {
-                case UINT8 -> createUint8DataBuffer(cursor, xyPlaneSize, tileRequest.getTileWidth(), minTileX, minTileY, minTileC);
-                case INT8 -> createInt8DataBuffer(cursor, xyPlaneSize, tileRequest.getTileWidth(), minTileX, minTileY, minTileC);
-                case UINT16 -> createUint16DataBuffer(cursor, xyPlaneSize, tileRequest.getTileWidth(), minTileX, minTileY, minTileC);
-                case INT16 -> createInt16DataBuffer(cursor, xyPlaneSize, tileRequest.getTileWidth(), minTileX, minTileY, minTileC);
-                case UINT32 -> createUint32DataBuffer(cursor, xyPlaneSize, tileRequest.getTileWidth(), minTileX, minTileY, minTileC);
-                case INT32 -> createInt32DataBuffer(cursor, xyPlaneSize, tileRequest.getTileWidth(), minTileX, minTileY, minTileC);
-                case FLOAT32 -> createFloat32DataBuffer(cursor, xyPlaneSize, tileRequest.getTileWidth(), minTileX, minTileY, minTileC);
-                case FLOAT64 -> createFloat64DataBuffer(cursor, xyPlaneSize, tileRequest.getTileWidth(), minTileX, minTileY, minTileC);
+                    case UINT8 -> createUint8DataBuffer(tile, new byte[numberOfChannelsInAccessibles][xyPlaneSize]);
+                    case INT8 -> createInt8DataBuffer(tile, new byte[numberOfChannelsInAccessibles][xyPlaneSize]);
+                    case UINT16 -> createUint16DataBuffer(tile, new short[numberOfChannelsInAccessibles][xyPlaneSize]);
+                    case INT16 -> createInt16DataBuffer(tile, new short[numberOfChannelsInAccessibles][xyPlaneSize]);
+                    case UINT32 -> createUint32DataBuffer(tile, new int[numberOfChannelsInAccessibles][xyPlaneSize]);
+                    case INT32 -> createInt32DataBuffer(tile, new int[numberOfChannelsInAccessibles][xyPlaneSize]);
+                    case FLOAT32 -> createFloat32DataBuffer(tile, new float[numberOfChannelsInAccessibles][xyPlaneSize]);
+                    case FLOAT64 -> createFloat64DataBuffer(tile, new double[numberOfChannelsInAccessibles][xyPlaneSize]);
             };
 
             return new BufferedImage(
@@ -477,131 +482,133 @@ public class ImgLib2ImageServer<T extends NativeType<T> & NumericType<T>> extend
         return image;
     }
 
-    private DataBuffer createUint8DataBuffer(Cursor<T> cursor, int xyPlaneSize, int tileWidth, int minTileX, int minTileY, int minTileC) {
-        byte[][] pixels = new byte[numberOfChannelsInAccessibles][xyPlaneSize];
-
-        while (cursor.hasNext()) {
-            UnsignedByteType value = (UnsignedByteType) cursor.next();
-
-            int c = cursor.getIntPosition(ImgBuilder.AXIS_CHANNEL) - minTileC;
-            int xy = cursor.getIntPosition(ImgBuilder.AXIS_X) - minTileX +
-                    (cursor.getIntPosition(ImgBuilder.AXIS_Y) - minTileY) * tileWidth;
-
-            pixels[c][xy] = value.getByte();
+    private DataBufferByte createUint8DataBuffer(RandomAccessibleInterval<T> tile, byte[][] pixels) {
+        if (pixels.length == 1) {
+            extract(tile, pixels[0]);
+        } else {
+            try (var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+                for (int c = 0; c < pixels.length; c++) {
+                    var channel = Views.hyperSlice(tile, ImgBuilder.AXIS_CHANNEL, c);
+                    var dest = pixels[c];
+                    pool.submit(() -> extract(channel, dest));
+                }
+            }
+            ;
         }
-
-        return new DataBufferByte(pixels, xyPlaneSize);
+        return new DataBufferByte(pixels, pixels[0].length);
     }
 
-    private DataBuffer createInt8DataBuffer(Cursor<T> cursor, int xyPlaneSize, int tileWidth, int minTileX, int minTileY, int minTileC) {
-        byte[][] pixels = new byte[numberOfChannelsInAccessibles][xyPlaneSize];
-
-        while (cursor.hasNext()) {
-            ByteType value = (ByteType) cursor.next();
-
-            int c = cursor.getIntPosition(ImgBuilder.AXIS_CHANNEL) - minTileC;
-            int xy = cursor.getIntPosition(ImgBuilder.AXIS_X) - minTileX +
-                    (cursor.getIntPosition(ImgBuilder.AXIS_Y) - minTileY) * tileWidth;
-
-            pixels[c][xy] = value.getByte();
+    private DataBufferByte createInt8DataBuffer(RandomAccessibleInterval<T> tile, byte[][] pixels) {
+        LogTools.warnOnce(logger, "Requesting INT8 image, underflow is possible");
+        if (pixels.length == 1) {
+            extract(tile, pixels[0]);
+        } else {
+            try (var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+                for (int c = 0; c < pixels.length; c++) {
+                    var channel = Views.hyperSlice(tile, ImgBuilder.AXIS_CHANNEL, c);
+                    var dest = pixels[c];
+                    pool.submit(() -> extract(channel, dest));
+                }
+            }
+            ;
         }
-
-        return new DataBufferByte(pixels, xyPlaneSize);
+        return new DataBufferByte(pixels, pixels[0].length);
     }
 
-    private DataBuffer createUint16DataBuffer(Cursor<T> cursor, int xyPlaneSize, int tileWidth, int minTileX, int minTileY, int minTileC) {
-        short[][] pixels = new short[numberOfChannelsInAccessibles][xyPlaneSize];
-
-        while (cursor.hasNext()) {
-            UnsignedShortType value = (UnsignedShortType) cursor.next();
-
-            int c = cursor.getIntPosition(ImgBuilder.AXIS_CHANNEL) - minTileC;
-            int xy = cursor.getIntPosition(ImgBuilder.AXIS_X) - minTileX +
-                    (cursor.getIntPosition(ImgBuilder.AXIS_Y) - minTileY) * tileWidth;
-
-            pixels[c][xy] = value.getShort();
+    private DataBufferUShort createUint16DataBuffer(RandomAccessibleInterval<T> tile, short[][] pixels) {
+        if (pixels.length == 1) {
+            extract(tile, pixels[0]);
+        } else {
+            try (var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+                for (int c = 0; c < pixels.length; c++) {
+                    var channel = Views.hyperSlice(tile, ImgBuilder.AXIS_CHANNEL, c);
+                    var dest = pixels[c];
+                    pool.submit(() -> extract(channel, dest));
+                }
+            }
         }
-
-        return new DataBufferUShort(pixels, xyPlaneSize);
+        return new DataBufferUShort(pixels, pixels[0].length);
     }
 
-    private DataBuffer createInt16DataBuffer(Cursor<T> cursor, int xyPlaneSize, int tileWidth, int minTileX, int minTileY, int minTileC) {
-        short[][] pixels = new short[numberOfChannelsInAccessibles][xyPlaneSize];
-
-        while (cursor.hasNext()) {
-            ShortType value = (ShortType) cursor.next();
-
-            int c = cursor.getIntPosition(ImgBuilder.AXIS_CHANNEL) - minTileC;
-            int xy = cursor.getIntPosition(ImgBuilder.AXIS_X) - minTileX +
-                    (cursor.getIntPosition(ImgBuilder.AXIS_Y) - minTileY) * tileWidth;
-
-            pixels[c][xy] = value.getShort();
+    private DataBufferShort createInt16DataBuffer(RandomAccessibleInterval<T> tile, short[][] pixels) {
+        if (pixels.length == 1) {
+            extract(tile, pixels[0]);
+        } else {
+            try (var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+                for (int c = 0; c < pixels.length; c++) {
+                    var channel = Views.hyperSlice(tile, ImgBuilder.AXIS_CHANNEL, c);
+                    var dest = pixels[c];
+                    pool.submit(() -> extract(channel, dest));
+                }
+            }
         }
-
-        return new DataBufferShort(pixels, xyPlaneSize);
+        return new DataBufferShort(pixels, pixels[0].length);
     }
 
-    private DataBuffer createUint32DataBuffer(Cursor<T> cursor, int xyPlaneSize, int tileWidth, int minTileX, int minTileY, int minTileC) {
-        int[][] pixels = new int[numberOfChannelsInAccessibles][xyPlaneSize];
-
-        while (cursor.hasNext()) {
-            UnsignedIntType value = (UnsignedIntType) cursor.next();
-
-            int c = cursor.getIntPosition(ImgBuilder.AXIS_CHANNEL) - minTileC;
-            int xy = cursor.getIntPosition(ImgBuilder.AXIS_X) - minTileX +
-                    (cursor.getIntPosition(ImgBuilder.AXIS_Y) - minTileY) * tileWidth;
-
-            pixels[c][xy] = value.getInt();
+    private DataBufferInt createInt32DataBuffer(RandomAccessibleInterval<T> tile, int[][] pixels) {
+        if (pixels.length == 1) {
+            extract(tile, pixels[0]);
+        } else {
+            try (var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+                for (int c = 0; c < pixels.length; c++) {
+                    var channel = Views.hyperSlice(tile, ImgBuilder.AXIS_CHANNEL, c);
+                    var dest = pixels[c];
+                    pool.submit(() -> extract(channel, dest));
+                }
+            }
         }
-
-        return new DataBufferInt(pixels, xyPlaneSize);
+        return new DataBufferInt(pixels, pixels[0].length);
     }
 
-    private DataBuffer createInt32DataBuffer(Cursor<T> cursor, int xyPlaneSize, int tileWidth, int minTileX, int minTileY, int minTileC) {
-        int[][] pixels = new int[numberOfChannelsInAccessibles][xyPlaneSize];
-
-        while (cursor.hasNext()) {
-            IntType value = (IntType) cursor.next();
-
-            int c = cursor.getIntPosition(ImgBuilder.AXIS_CHANNEL) - minTileC;
-            int xy = cursor.getIntPosition(ImgBuilder.AXIS_X) - minTileX +
-                    (cursor.getIntPosition(ImgBuilder.AXIS_Y) - minTileY) * tileWidth;
-
-            pixels[c][xy] = value.getInt();
+    private DataBufferInt createUint32DataBuffer(RandomAccessibleInterval<T> tile, int[][] pixels) {
+        LogTools.warnOnce(logger, "Requesting UINT32 image, underflow may occur");
+        if (pixels.length == 1) {
+            extract(tile, pixels[0]);
+        } else {
+            try (var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+                for (int c = 0; c < pixels.length; c++) {
+                    var channel = Views.hyperSlice(tile, ImgBuilder.AXIS_CHANNEL, c);
+                    var dest = pixels[c];
+                    pool.submit(() -> extract(channel, dest));
+                }
+            }
         }
-
-        return new DataBufferInt(pixels, xyPlaneSize);
+        return new DataBufferInt(pixels, pixels[0].length);
     }
 
-    private DataBuffer createFloat32DataBuffer(Cursor<T> cursor, int xyPlaneSize, int tileWidth, int minTileX, int minTileY, int minTileC) {
-        float[][] pixels = new float[numberOfChannelsInAccessibles][xyPlaneSize];
-
-        while (cursor.hasNext()) {
-            FloatType value = (FloatType) cursor.next();
-
-            int c = cursor.getIntPosition(ImgBuilder.AXIS_CHANNEL) - minTileC;
-            int xy = cursor.getIntPosition(ImgBuilder.AXIS_X) - minTileX +
-                    (cursor.getIntPosition(ImgBuilder.AXIS_Y) - minTileY) * tileWidth;
-
-            pixels[c][xy] = value.get();
+    private DataBufferFloat createFloat32DataBuffer(RandomAccessibleInterval<T> tile, float[][] pixels) {
+        if (pixels.length == 1) {
+            extract(tile, pixels[0]);
+        } else {
+            try (var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+                for (int c = 0; c < pixels.length; c++) {
+                    var channel = Views.hyperSlice(tile, ImgBuilder.AXIS_CHANNEL, c);
+                    var dest = pixels[c];
+                    pool.submit(() -> extract(channel, dest));
+                }
+            }
         }
-
-        return new DataBufferFloat(pixels, xyPlaneSize);
+        return new DataBufferFloat(pixels, pixels[0].length);
     }
 
-    private DataBuffer createFloat64DataBuffer(Cursor<T> cursor, int xyPlaneSize, int tileWidth, int minTileX, int minTileY, int minTileC) {
-        double[][] pixels = new double[numberOfChannelsInAccessibles][xyPlaneSize];
-
-        while (cursor.hasNext()) {
-            DoubleType value = (DoubleType) cursor.next();
-
-            int c = cursor.getIntPosition(ImgBuilder.AXIS_CHANNEL) - minTileC;
-            int xy = cursor.getIntPosition(ImgBuilder.AXIS_X) - minTileX +
-                    (cursor.getIntPosition(ImgBuilder.AXIS_Y) - minTileY) * tileWidth;
-
-            pixels[c][xy] = value.get();
+    private DataBufferDouble createFloat64DataBuffer(RandomAccessibleInterval<T> tile, double[][] pixels) {
+        if (pixels.length == 1) {
+            extract(tile, pixels[0]);
+        } else {
+            try (var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+                for (int c = 0; c < pixels.length; c++) {
+                    var channel = Views.hyperSlice(tile, ImgBuilder.AXIS_CHANNEL, c);
+                    var dest = pixels[c];
+                    pool.submit(() -> extract(channel, dest));
+                }
+            }
         }
-
-        return new DataBufferDouble(pixels, xyPlaneSize);
+        return new DataBufferDouble(pixels, pixels[0].length);
     }
+
+    private static <T, S extends NativeType<S>> T extract(RandomAccessibleInterval<S> interval, T dest) {
+        PrimitiveBlocks.of(interval).copy(interval, dest);
+        return dest;
+    }
+
 }
