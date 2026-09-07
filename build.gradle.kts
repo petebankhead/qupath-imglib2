@@ -4,13 +4,19 @@ plugins {
 }
 
 group = "io.github.qupath"
-version = "0.1.2"
+version = "0.2.0"
 
 repositories {
     mavenCentral()
 
     maven {
-        url = uri("https://maven.scijava.org/content/repositories/public/")
+        url = uri("https://maven.scijava.org/content/repositories/releases/")
+    }
+    maven {
+        url = uri("https://maven.scijava.org/content/repositories/unidata/")
+    }
+    maven {
+        url = uri("https://maven.scijava.org/content/groups/public/")
     }
 }
 
@@ -18,6 +24,10 @@ dependencies {
     // ImgLib2
     api(sciJava.imglib2.imglib2)
     implementation(sciJava.imglib2.realtransform)
+
+    implementation("ome.zarr:ome-zarr-java:0.7.3")
+    implementation("ome.zarr:ome-zarr-zarrjava:0.7.3")
+//    implementation("ome.zarr:ome-zarr-n5:0.7.3")
 
     // QuPath
     api(qupath.qupath.core)
