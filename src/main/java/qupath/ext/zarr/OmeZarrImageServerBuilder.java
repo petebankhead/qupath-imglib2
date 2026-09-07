@@ -88,6 +88,9 @@ public class OmeZarrImageServerBuilder implements ImageServerBuilder<BufferedIma
     private static Optional<Integer> parseColor(String color) {
         if (color != null && !color.isBlank()) {
             try {
+                if (!color.startsWith("#")) {
+                    color = "#" + color;
+                }
                 return Optional.of(
                         Color.decode(color).getRGB()
                 );
