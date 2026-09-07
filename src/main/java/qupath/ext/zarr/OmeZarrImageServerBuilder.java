@@ -1,7 +1,6 @@
 package qupath.ext.zarr;
 
 import net.imglib2.RandomAccessibleInterval;
-import net.imglib2.img.Img;
 import net.imglib2.type.NativeType;
 import net.imglib2.type.numeric.RealType;
 import net.imglib2.view.Views;
@@ -56,11 +55,17 @@ public class OmeZarrImageServerBuilder implements ImageServerBuilder<BufferedIma
         AxisCalibration[] axes = contents.axesPerLevel[0];
         for (int r = 0; r < contents.numResolutionLevels(); r++) {
             RandomAccessibleInterval<T> img = contents.asImg(r);
-            if (img.numDimensions() != 5) {
+            if (img.numDimensions() > 5 || img.numDimensions() < 2) {
                 throw new IOException("Invalid image dimensions: " + img.numDimensions());
             }
             // Switch XYCZT to XYZCT
-            img = Views.moveAxis(img, 2, 3);
+            if (img.numDimensions() > 3) {
+                img = Views.moveAxis(img, 2, 3);
+            }
+            // Ensure we have enough dimensions
+            while (img.numDimensions() < 5) {
+                img = Views.addDimension(img, 0, 0);
+            }
             resolutions.add(img);
         }
         var builder = ImgLib2ImageServer.builder(resolutions);
