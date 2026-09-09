@@ -29,7 +29,6 @@ dependencies {
     implementation("ome.zarr:ome-zarr-zarrjava:0.7.3")
 //    implementation("ome.zarr:ome-zarr-n5:0.7.3")
     implementation("io.github.qupath:qupath-extension-bioformats:0.7.0")
-    implementation("io.github.qupath:qupath-core-processing:0.7.0")
 
     // QuPath
     api(qupath.qupath.core)
