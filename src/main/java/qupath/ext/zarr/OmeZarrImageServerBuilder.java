@@ -117,6 +117,9 @@ public class OmeZarrImageServerBuilder implements ImageServerBuilder<BufferedIma
 
     private static List<ImageChannel> parseChannels(Omero omero) {
         List<ImageChannel> channels = new ArrayList<>();
+        if (omero.channels == null) {
+            return channels;
+        }
         for (int c = 0; c < omero.channels.size(); c++) {
             var channel = omero.channels.get(c);
             String name = channel.label;
