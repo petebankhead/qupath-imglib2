@@ -13,7 +13,6 @@ import qupath.lib.images.writers.ome.zarr.PyramidalOMEZarrWriter;
 import qupath.lib.projects.Project;
 import qupath.lib.projects.ProjectImageEntry;
 
-
 import static ome.zarr.imglib2.ZarrUtils.isZarr;
 
 /**
@@ -38,8 +37,8 @@ public class CachedPixelClassifierServer extends PixelClassificationImageServer 
 
     /**
      * Create a cached pixel classifier server in the project entry directory named according to the pixel classifier's hashcode (not persistent across sessions).
-     * @param projectImageEntry
-     * @param pixelClassifier
+     * @param projectImageEntry the project image entry
+     * @param pixelClassifier the pixel classifier
      * @throws IOException
      */
     public CachedPixelClassifierServer(ProjectImageEntry<BufferedImage> projectImageEntry, PixelClassifier pixelClassifier) throws IOException {
