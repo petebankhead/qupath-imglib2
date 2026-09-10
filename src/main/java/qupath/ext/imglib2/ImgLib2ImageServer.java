@@ -607,7 +607,7 @@ public class ImgLib2ImageServer<T extends NativeType<T> & NumericType<T>> extend
     }
 
     private static <T, S extends NativeType<S>> T extract(RandomAccessibleInterval<S> interval, T dest) {
-        PrimitiveBlocks.of(interval).copy(interval, dest);
+        PrimitiveBlocks.of(interval, PrimitiveBlocks.OnFallback.ACCEPT).copy(interval, dest);
         return dest;
     }
 
