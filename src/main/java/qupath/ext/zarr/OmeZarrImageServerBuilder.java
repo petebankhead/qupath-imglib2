@@ -36,8 +36,9 @@ public class OmeZarrImageServerBuilder implements ImageServerBuilder<BufferedIma
     @Override
     public UriImageSupport<BufferedImage> checkImageSupport(URI uri, String... args) throws IOException {
         float supportLevel = 0f;
-        if (ZarrUtils.isZarr(uri))
+        if (ZarrUtils.isZarr(uri)) {
             supportLevel = 5f;
+        }
         return UriImageSupport.createInstance(
                 OmeZarrImageServerBuilder.class,
                 supportLevel,
@@ -86,10 +87,12 @@ public class OmeZarrImageServerBuilder implements ImageServerBuilder<BufferedIma
     }
 
     private static PixelCalibration parsePixelCalibration(AxisCalibration[] axes) {
-        if (!Objects.equals(AxisCalibration.X, axes[0].name))
+        if (!Objects.equals(AxisCalibration.X, axes[0].name)) {
             throw new IllegalArgumentException("Expected first axis to be " + AxisCalibration.X + ", found " + axes[0].name);
-        if (!Objects.equals(AxisCalibration.Y, axes[1].name))
+        }
+        if (!Objects.equals(AxisCalibration.Y, axes[1].name)) {
             throw new IllegalArgumentException("Expected first axis to be " + AxisCalibration.Y + ", found " + axes[1].name);
+        }
         // Original expected order is XYZCT *before* we convert for QuPath
         var builder = new PixelCalibration.Builder();
         if (isMicrons(axes[0].unit) && isMicrons(axes[1].unit)) {
